@@ -1,0 +1,196 @@
+<!--
+  Pagina scanner check-in — versione da ospitare FUORI da Apps Script (es. GitHub Pages),
+  per avere la fotocamera continua senza il bug del permesso "camera" bloccato nell'iframe
+  delle Web App di Apps Script (vedi script-scanner-checkin.gs per i dettagli del bug).
+
+  Questa pagina NON tocca il foglio Google direttamente: chiama via fetch() l'endpoint
+  ?formato=json della Web App Apps Script già pubblicata, che fa la vera lettura/scrittura
+  sul foglio Prenotazioni.
+
+  SETUP:
+  1. Sostituisci qui sotto il valore di URL_WEB_APP con l'URL della tua Web App (lo stesso
+     salvato in Config Evento, es. https://script.google.com/macros/s/AKfycb.../exec).
+  2. Carica questo file su GitHub Pages (vedi guida) con nome "index.html".
+  3. Apri l'URL di GitHub Pages da uno o più telefoni contemporaneamente: nessun login richiesto.
+-->
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Check-in evento</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #111;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 0 0 24px;
+    }
+    h1 { font-size: 18px; margin: 14px 0 8px; text-align: center; }
+    #reader { width: 100%; max-width: 420px; }
+    #risultato {
+      width: 100%;
+      max-width: 420px;
+      margin-top: 14px;
+      padding: 20px 16px;
+      border-radius: 10px;
+      text-align: center;
+      font-size: 17px;
+      font-weight: bold;
+      line-height: 1.4;
+      min-height: 90px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .stato-inattivo  { background: #333; color: #ccc; font-weight: normal; }
+    .stato-verifica  { background: #333; color: #ccc; }
+    .stato-ok        { background: #1e7d32; color: #fff; }
+    .stato-gia       { background: #555; color: #fff; }
+    .stato-annullata { background: #b3261e; color: #fff; }
+    .stato-attenzione{ background: #b8860b; color: #fff; }
+    .stato-errore    { background: #b3261e; color: #fff; }
+    #btnRiprova {
+      margin: 16px 0 0;
+      padding: 14px 28px;
+      font-size: 16px;
+      border: none;
+      border-radius: 8px;
+      background: #2962ff;
+      color: #fff;
+      display: none;
+    }
+    #btnRiprova.visibile { display: inline-block; }
+  </style>
+</head>
+<body>
+  <h1>Check-in evento — inquadra il QR del biglietto</h1>
+  <div id="reader"></div>
+  <div id="risultato" class="stato-inattivo">Pronto per la scansione</div>
+  <button id="btnRiprova">Scansiona il prossimo</button>
+
+  <script>
+    // ===== CONFIGURA QUI L'URL DELLA TUA WEB APP APPS SCRIPT =====
+    const URL_WEB_APP = "https://script.google.com/macros/s/AKfycbxxaV69R5I13DJ-QHqFuzNr6vZnnMM7akq_CeI2X37B9s8OIxRYFhbpsMvzILCszVz1/exec";
+
+    const risultatoEl = document.getElementById('risultato');
+    const btnRiprova = document.getElementById('btnRiprova');
+    let scannerAttivo = true;
+    let ripresaAutomatica = null;
+
+    const html5QrCode = new Html5Qrcode("reader");
+
+    function onScanSuccess(testoDecodificato) {
+      if (!scannerAttivo) return;
+      scannerAttivo = false;
+      html5QrCode.pause(true);
+
+      risultatoEl.className = 'stato-verifica';
+      risultatoEl.textContent = 'Verifica in corso...';
+      btnRiprova.classList.remove('visibile');
+
+      // Il QR contiene il link completo di check-in (.../exec?id=TKT-...): estraiamo solo
+      // il valore del parametro "id", che può arrivare anche come solo testo (es. da un
+      // vecchio biglietto non ancora rigenerato) — in quel caso usiamo il testo intero.
+      let idBiglietto = testoDecodificato;
+      try {
+        const url = new URL(testoDecodificato);
+        const idDaUrl = url.searchParams.get('id');
+        if (idDaUrl) idBiglietto = idDaUrl;
+      } catch (err) {
+        // Non è un URL valido: probabilmente un vecchio biglietto con solo l'ID come testo. Va bene lo stesso.
+      }
+
+      const endpoint = URL_WEB_APP + "?formato=json&id=" + encodeURIComponent(idBiglietto);
+
+      fetch(endpoint)
+        .then(function(risposta) {
+          if (!risposta.ok) throw new Error("HTTP " + risposta.status);
+          return risposta.json();
+        })
+        .then(mostraEsito)
+        .catch(mostraErroreTecnico);
+    }
+
+    function nomeCompleto(esito) {
+      return [esito.nome, esito.cognome].filter(Boolean).join(' ').trim() || 'Ospite';
+    }
+
+    function mostraEsito(esito) {
+      let classe, testo, vibrazione;
+
+      switch (esito.esito) {
+        case 'ok':
+          classe = 'stato-ok';
+          testo = 'Benvenuto/a ' + nomeCompleto(esito)
+            + (esito.posto ? '\nPosto ' + esito.posto : '')
+            + '\nCheck-in ore ' + esito.oraCheckin;
+          vibrazione = [80];
+          break;
+        case 'gia_presente':
+          classe = 'stato-gia';
+          testo = nomeCompleto(esito) + '\nGià entrato/a alle ' + esito.oraCheckin
+            + (esito.posto ? '\nPosto ' + esito.posto : '');
+          vibrazione = [80, 80, 80];
+          break;
+        case 'annullata':
+          classe = 'stato-annullata';
+          testo = nomeCompleto(esito) + '\nPRENOTAZIONE ANNULLATA — non valido';
+          vibrazione = [200, 100, 200];
+          break;
+        case 'non_confermata':
+          classe = 'stato-attenzione';
+          testo = nomeCompleto(esito) + '\nNon confermata (Stato: ' + esito.stato + ')\nVerifica manuale';
+          vibrazione = [150, 100, 150];
+          break;
+        case 'non_trovato':
+        default:
+          classe = 'stato-errore';
+          testo = 'Biglietto non riconosciuto';
+          vibrazione = [200, 100, 200];
+          break;
+      }
+
+      risultatoEl.className = classe;
+      risultatoEl.textContent = testo;
+      if (navigator.vibrate) navigator.vibrate(vibrazione);
+
+      btnRiprova.classList.add('visibile');
+      ripresaAutomatica = setTimeout(riprendiScansione, 3500);
+    }
+
+    function mostraErroreTecnico(errore) {
+      risultatoEl.className = 'stato-errore';
+      risultatoEl.textContent = 'Errore di connessione, riprova\n(' + errore.message + ')';
+      btnRiprova.classList.add('visibile');
+    }
+
+    function riprendiScansione() {
+      if (ripresaAutomatica) { clearTimeout(ripresaAutomatica); ripresaAutomatica = null; }
+      scannerAttivo = true;
+      risultatoEl.className = 'stato-inattivo';
+      risultatoEl.textContent = 'Pronto per la scansione';
+      btnRiprova.classList.remove('visibile');
+      html5QrCode.resume();
+    }
+
+    btnRiprova.addEventListener('click', riprendiScansione);
+
+    html5QrCode.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 250, height: 250 } },
+      onScanSuccess
+    ).catch(function(err) {
+      risultatoEl.className = 'stato-errore';
+      risultatoEl.textContent = 'Impossibile avviare la fotocamera: ' + err;
+    });
+  </script>
+</body>
+</html>
