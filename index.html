@@ -110,13 +110,40 @@
 
       const endpoint = URL_WEB_APP + "?formato=json&id=" + encodeURIComponent(idBiglietto);
 
-      fetch(endpoint)
-        .then(function(risposta) {
-          if (!risposta.ok) throw new Error("HTTP " + risposta.status);
-          return risposta.json();
-        })
-        .then(mostraEsito)
-        .catch(mostraErroreTecnico);
+      chiamataJsonp(endpoint, function(errore, esito) {
+        if (errore) {
+          mostraErroreTecnico(errore);
+          return;
+        }
+        mostraEsito(esito);
+      });
+    }
+
+    // Chiamata JSONP: Apps Script non restituisce le intestazioni CORS necessarie a fetch()
+    // per essere letto da un dominio esterno come questo (GitHub Pages). Un tag <script> non è
+    // soggetto a CORS: il server risponde con codice JS che invoca direttamente questa funzione.
+    let contatoreJsonp = 0;
+    function chiamataJsonp(url, callback) {
+      const nomeCallback = "cbCheckin" + (contatoreJsonp++);
+      const scriptTag = document.createElement('script');
+
+      const pulisci = function() {
+        delete window[nomeCallback];
+        if (scriptTag.parentNode) scriptTag.parentNode.removeChild(scriptTag);
+      };
+
+      window[nomeCallback] = function(dati) {
+        pulisci();
+        callback(null, dati);
+      };
+
+      scriptTag.onerror = function() {
+        pulisci();
+        callback(new Error("Impossibile contattare il server"));
+      };
+
+      scriptTag.src = url + "&callback=" + nomeCallback;
+      document.body.appendChild(scriptTag);
     }
 
     function nomeCompleto(esito) {
